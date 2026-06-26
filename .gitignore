@@ -1,0 +1,7 @@
+# Real config holds account names + recipient addresses - keep it out of git.
+LockoutConfig.psd1
+
+# Runtime artifacts
+state/
+logs/
+*.log
