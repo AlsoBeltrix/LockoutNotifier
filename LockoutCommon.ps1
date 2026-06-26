@@ -7,6 +7,30 @@
     dot-source), so dot-source AFTER loading config in each script.
 #>
 
+# Safely read a config key with a fallback default. Needed because the scripts run
+# under Set-StrictMode -Version Latest, where dot-accessing a MISSING hashtable key
+# (e.g. $cfg.MaxEvents when the user trimmed it) THROWS instead of yielding $null -
+# so the usual "$cfg.X | else default" pattern never reaches its default. Works on
+# hashtables and PSCustomObjects, and returns $Default when $Config itself is $null
+# (so nested lookups like (Get-ConfigValue (Get-ConfigValue $cfg 'Tracing') 'Enabled')
+# are safe even when the parent block is absent). NOTE: $Config is intentionally NOT
+# Mandatory - a Mandatory param rejects $null before the body's null-guard can run.
+function Get-ConfigValue {
+    param(
+        $Config,
+        [Parameter(Mandatory)][string]$Key,
+        $Default = $null
+    )
+    if ($null -eq $Config) { return $Default }
+    if ($Config -is [System.Collections.IDictionary]) {
+        if ($Config.Contains($Key) -and $null -ne $Config[$Key]) { return $Config[$Key] }
+        return $Default
+    }
+    $prop = $Config.PSObject.Properties[$Key]
+    if ($prop -and $null -ne $prop.Value) { return $prop.Value }
+    $Default
+}
+
 # Resolve the path-valued config keys against $BaseDir when they're relative, so
 # the install location isn't hardcoded. Absolute paths are left untouched. Mutates
 # $cfg in place. Call once, right after loading config + dot-sourcing this file.
@@ -78,35 +102,60 @@ function ConvertFrom-Iso {
             [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$dt)) { $dt } else { $null }
 }
 
+# Run $ScriptBlock while holding an exclusive cross-process lock on the history
+# file, so the event task (appending) and the digest task (pruning/rewriting) can't
+# clobber the CSV when they overlap. If no HistoryFile is configured, runs without
+# a lock. The lock is a sidecar "<historyfile>.lock" opened with FileShare::None.
+function Invoke-WithLockoutHistoryLock {
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [int]$TimeoutSeconds = 30)
+    $historyFile = Get-ConfigValue -Config $cfg -Key 'HistoryFile'
+    if (-not $historyFile) { return & $ScriptBlock }
+
+    $dir = Split-Path -Parent $historyFile
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $lockPath = "$historyFile.lock"
+
+    $stream = $null
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while (-not $stream -and (Get-Date) -lt $deadline) {
+        try {
+            $stream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate,
+                [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        } catch [System.IO.IOException] { Start-Sleep -Milliseconds 200 }
+    }
+    if (-not $stream) { throw "Timed out acquiring history lock: $lockPath" }
+    try { & $ScriptBlock } finally { $stream.Dispose() }
+}
+
 # Append new lockout events to the history CSV (deduped by RecordId).
 function Add-LockoutHistory {
     param([Parameter(Mandatory)]$Events)
-    if (-not $cfg.HistoryFile) { return }
-    $path = $cfg.HistoryFile
-    $dir = Split-Path -Parent $path
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-
-    $seen = @{}
-    if (Test-Path -LiteralPath $path) {
-        foreach ($r in (Import-Csv -LiteralPath $path)) { $seen[[string]$r.RecordId] = $true }
-    }
-    $rows = foreach ($e in $Events) {
-        if ($seen.ContainsKey([string]$e.RecordId)) { continue }
-        [pscustomobject]@{
-            RecordId  = $e.RecordId
-            UserID    = $e.UserID
-            Computer  = $e.Computer
-            TimeStamp = $e.TimeStamp.ToString('o')   # ISO 8601, culture-invariant + sortable
+    $path = Get-ConfigValue -Config $cfg -Key 'HistoryFile'
+    if (-not $path) { return }
+    Invoke-WithLockoutHistoryLock {
+        $seen = @{}
+        if (Test-Path -LiteralPath $path) {
+            foreach ($r in (Import-Csv -LiteralPath $path)) { $seen[[string]$r.RecordId] = $true }
         }
+        $rows = foreach ($e in $Events) {
+            if ($seen.ContainsKey([string]$e.RecordId)) { continue }
+            [pscustomobject]@{
+                RecordId  = $e.RecordId
+                UserID    = $e.UserID
+                Computer  = $e.Computer
+                TimeStamp = $e.TimeStamp.ToString('o')   # ISO 8601, culture-invariant + sortable
+            }
+        }
+        if ($rows) { $rows | Export-Csv -LiteralPath $path -NoTypeInformation -Append }
     }
-    if ($rows) { $rows | Export-Csv -LiteralPath $path -NoTypeInformation -Append }
 }
 
 # Read history rows, optionally filtered to the last $Hours and/or one account.
 function Get-LockoutHistory {
     param([int]$Hours, [string]$Account)
-    if (-not ($cfg.HistoryFile -and (Test-Path -LiteralPath $cfg.HistoryFile))) { return @() }
-    $rows = @(Import-Csv -LiteralPath $cfg.HistoryFile)
+    $path = Get-ConfigValue -Config $cfg -Key 'HistoryFile'
+    if (-not ($path -and (Test-Path -LiteralPath $path))) { return @() }
+    $rows = @(Invoke-WithLockoutHistoryLock { @(Import-Csv -LiteralPath $path) })
     if ($Hours) {
         $since = (Get-Date).AddHours(-$Hours)
         $rows = $rows | Where-Object {
@@ -124,13 +173,16 @@ function Get-LockoutHistory {
 # Prune history rows older than $Days (keeps the file bounded). Run from the digest.
 function Remove-OldLockoutHistory {
     param([int]$Days = 30)
-    if (-not ($cfg.HistoryFile -and (Test-Path -LiteralPath $cfg.HistoryFile))) { return }
-    $cutoff = (Get-Date).AddDays(-$Days)
-    $kept = Import-Csv -LiteralPath $cfg.HistoryFile | Where-Object {
-        $t = ConvertFrom-Iso $_.TimeStamp
-        $t -and $t -ge $cutoff
+    $path = Get-ConfigValue -Config $cfg -Key 'HistoryFile'
+    if (-not ($path -and (Test-Path -LiteralPath $path))) { return }
+    Invoke-WithLockoutHistoryLock {
+        $cutoff = (Get-Date).AddDays(-$Days)
+        $kept = Import-Csv -LiteralPath $path | Where-Object {
+            $t = ConvertFrom-Iso $_.TimeStamp
+            $t -and $t -ge $cutoff
+        }
+        $kept | Export-Csv -LiteralPath $path -NoTypeInformation
     }
-    $kept | Export-Csv -LiteralPath $cfg.HistoryFile -NoTypeInformation
 }
 
 # Count an account's lockouts in the last $Hours, from durable history.
@@ -157,11 +209,12 @@ function Write-Log {
     param([string]$Message, [ValidateSet('INFO', 'WARN', 'ERROR')]$Level = 'INFO')
     $line = "{0} [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
     Write-Output $line
-    if ($cfg.LogFile) {
+    $logFile = Get-ConfigValue -Config $cfg -Key 'LogFile'
+    if ($logFile) {
         try {
-            $dir = Split-Path -Parent $cfg.LogFile
+            $dir = Split-Path -Parent $logFile
             if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-            Add-Content -LiteralPath $cfg.LogFile -Value $line
+            Add-Content -LiteralPath $logFile -Value $line
         } catch { Write-Warning "Could not write log: $_" }
     }
 }
@@ -197,7 +250,9 @@ function Send-Notice {
         return
     }
     $params = @{
-        To = $To; From = $cfg.From; SmtpServer = $cfg.SmtpServer
+        To = $To
+        From = Get-ConfigValue -Config $cfg -Key 'From'
+        SmtpServer = Get-ConfigValue -Config $cfg -Key 'SmtpServer'
         Subject = $Subject; Body = $Body
     }
     if ($Html) { $params.BodyAsHtml = $true }

@@ -75,7 +75,7 @@ try {
     throw
 }
 
-$maxEvents = if ($cfg.MaxEvents) { [int]$cfg.MaxEvents } else { 25 }
+$maxEvents = [int](Get-ConfigValue -Config $cfg -Key 'MaxEvents' -Default 25)
 
 try {
     $raw = Get-LockoutEvent -ComputerName $pdc `
@@ -120,8 +120,9 @@ if ($PreviewMode) {
 #region ---- Dedup against last-processed RecordId ----------------------------
 
 $lastSeen = 0L
-if ($cfg.StateFile -and (Test-Path -LiteralPath $cfg.StateFile)) {
-    [int64]::TryParse((Get-Content -LiteralPath $cfg.StateFile -Raw).Trim(), [ref]$lastSeen) | Out-Null
+$stateFile = Get-ConfigValue -Config $cfg -Key 'StateFile'
+if ($stateFile -and (Test-Path -LiteralPath $stateFile)) {
+    [int64]::TryParse((Get-Content -LiteralPath $stateFile -Raw).Trim(), [ref]$lastSeen) | Out-Null
 }
 
 # In preview, show everything fetched (the state file may already be past all
@@ -142,10 +143,11 @@ Write-Log ("{0} new lockout(s): {1}" -f @($new).Count, (($new | ForEach-Object {
 
 #region ---- Behavior 1: Watch-list alerts (enriched) -------------------------
 
-if ($cfg.WatchList -and $cfg.WatchList.Enabled) {
-    $repeatHours = if ($cfg.RepeatWindowHours) { [int]$cfg.RepeatWindowHours } else { 24 }
+$watchList = Get-ConfigValue -Config $cfg -Key 'WatchList'
+if ($watchList -and (Get-ConfigValue -Config $watchList -Key 'Enabled' -Default $false)) {
+    $repeatHours = [int](Get-ConfigValue -Config $cfg -Key 'RepeatWindowHours' -Default 24)
 
-    foreach ($entry in $cfg.WatchList.Accounts) {
+    foreach ($entry in (Get-ConfigValue -Config $watchList -Key 'Accounts' -Default @())) {
         $acct = $entry.Account
         $flagged = $new | Where-Object { $_.UserID -eq $acct -or $_.UserID -eq "$acct$" }
         if (-not $flagged) { continue }
@@ -171,9 +173,10 @@ if ($cfg.WatchList -and $cfg.WatchList.Enabled) {
 
 #region ---- Behavior 2: Source IP / culprit tracing --------------------------
 
-if ($cfg.Tracing -and $cfg.Tracing.Enabled) {
-    $excludes = @($cfg.Tracing.ExcludeMachinePatterns)
-    $window   = if ($cfg.Tracing.CorrelationWindowSeconds) { [int]$cfg.Tracing.CorrelationWindowSeconds } else { 1 }
+$tracing = Get-ConfigValue -Config $cfg -Key 'Tracing'
+if ($tracing -and (Get-ConfigValue -Config $tracing -Key 'Enabled' -Default $false)) {
+    $excludes = @(Get-ConfigValue -Config $tracing -Key 'ExcludeMachinePatterns' -Default @())
+    $window   = [int](Get-ConfigValue -Config $tracing -Key 'CorrelationWindowSeconds' -Default 1)
 
     foreach ($evt in $new) {
         $source = $evt.Computer
@@ -239,7 +242,7 @@ using stale credentials) is the usual culprit.
             $userinfo | Select-Object SamAccountName, UserPrincipalName, PasswordLastSet, LockedOut | Format-List | Out-String
         } else { '' }
 
-        Send-Notice -To $cfg.Tracing.Recipients `
+        Send-Notice -To (Get-ConfigValue -Config $tracing -Key 'Recipients') `
             -Subject "Lockout trace: $($evt.UserID) from $source" `
             -Body ($guidance + "`r`n" + $detail + $acctInfo)
     }
@@ -249,13 +252,14 @@ using stale credentials) is the usual culprit.
 
 #region ---- Behavior 3: Raw lockout dump -------------------------------------
 
-if ($cfg.Dump -and $cfg.Dump.Enabled) {
+$dump = Get-ConfigValue -Config $cfg -Key 'Dump'
+if ($dump -and (Get-ConfigValue -Config $dump -Key 'Enabled' -Default $false)) {
     $digest = $new | Select-Object UserID, Computer, TimeStamp
     $attachment = Join-Path $env:TEMP ("lockouts_{0}.txt" -f $env:COMPUTERNAME)
     $digest | Format-Table -AutoSize | Out-File -LiteralPath $attachment -Encoding UTF8
 
     $body = $digest | ConvertTo-StyledTable
-    Send-Notice -To $cfg.Dump.Recipients -Subject 'Real-Time Lockouts' -Body $body -Attachments $attachment -Html
+    Send-Notice -To (Get-ConfigValue -Config $dump -Key 'Recipients') -Subject 'Real-Time Lockouts' -Body $body -Attachments $attachment -Html
     Remove-Item -LiteralPath $attachment -ErrorAction SilentlyContinue
 }
 
@@ -265,12 +269,12 @@ if ($cfg.Dump -and $cfg.Dump.Enabled) {
 
 if ($PreviewMode) {
     Write-Log "PREVIEW: state file not advanced (still at RecordId $lastSeen)."
-} elseif ($cfg.StateFile) {
+} elseif ($stateFile) {
     try {
-        $dir = Split-Path -Parent $cfg.StateFile
+        $dir = Split-Path -Parent $stateFile
         if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         ($new | Measure-Object -Property RecordId -Maximum).Maximum |
-            Set-Content -LiteralPath $cfg.StateFile
+            Set-Content -LiteralPath $stateFile
     } catch {
         Write-Log "Could not update state file: $_" 'WARN'
     }

@@ -41,29 +41,30 @@ $cfg = Import-PowerShellDataFile -LiteralPath $ConfigPath
 . (Join-Path $scriptDir 'LockoutCommon.ps1')
 Resolve-ConfigPath -BaseDir $scriptDir
 
-if (-not ($cfg.Digest -and $cfg.Digest.Enabled)) {
+$digest = Get-ConfigValue -Config $cfg -Key 'Digest'
+if (-not ($digest -and (Get-ConfigValue -Config $digest -Key 'Enabled' -Default $false))) {
     Write-Log 'Digest disabled in config; nothing to do.'
     return
 }
 
-$hours = if ($cfg.Digest.WindowHours) { [int]$cfg.Digest.WindowHours } else { 24 }
+$hours = [int](Get-ConfigValue -Config $digest -Key 'WindowHours' -Default 24)
 
 # Read from the durable history file (populated by LockoutAlerts.ps1), not the log.
 $rows = Get-LockoutHistory -Hours $hours
 
 # Bound the history file while we're here (skip during preview).
 if (-not $PreviewMode) {
-    $retain = if ($cfg.HistoryRetentionDays) { [int]$cfg.HistoryRetentionDays } else { 30 }
+    $retain = [int](Get-ConfigValue -Config $cfg -Key 'HistoryRetentionDays' -Default 30)
     try { Remove-OldLockoutHistory -Days $retain } catch { Write-Log "History prune failed: $_" 'WARN' }
 }
 
 if (-not $rows) {
     Write-Log "No recorded lockouts in the last ${hours}h."
-    if (-not $cfg.HistoryFile) {
+    if (-not (Get-ConfigValue -Config $cfg -Key 'HistoryFile')) {
         Write-Log "HistoryFile not configured - digest has no data source. Set it in the config." 'WARN'
     }
-    if ($cfg.Digest.SendWhenEmpty) {
-        Send-Notice -To $cfg.Digest.Recipients -Subject "Lockout digest - none in last ${hours}h" `
+    if (Get-ConfigValue -Config $digest -Key 'SendWhenEmpty' -Default $false) {
+        Send-Notice -To (Get-ConfigValue -Config $digest -Key 'Recipients') -Subject "Lockout digest - none in last ${hours}h" `
             -Body "<p>No account lockouts recorded in the last $hours hours.</p>" -Html
     }
     return
@@ -92,4 +93,4 @@ $subject = "Lockout digest (last ${hours}h): $(@($summary).Count) accounts, $sti
 $intro = "<p>Account lockouts in the last <b>$hours</b> hours. Accounts still locked are listed first.</p>"
 $body = $intro + ($summary | ConvertTo-StyledTable)
 
-Send-Notice -To $cfg.Digest.Recipients -Subject $subject -Body $body -Html
+Send-Notice -To (Get-ConfigValue -Config $digest -Key 'Recipients') -Subject $subject -Body $body -Html
