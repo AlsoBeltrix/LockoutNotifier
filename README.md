@@ -65,8 +65,9 @@ requires — update those two if your path differs.
    - `SmtpServer`, `From`
    - `WatchList.Accounts`, and the `Recipients` for Tracing / Dump / Digest
    - `Tracing.ExcludeMachinePatterns` — **review this for the new domain.** The
-     sample's `-L0/-D0/-T0` is ADI's workstation naming scheme. Set patterns that
-     match this domain's end-user PCs, or `@()` to trace every source machine.
+     sample's `-L0/-D0/-T0` is the legacy domain's workstation naming scheme. Set
+     patterns that match this domain's end-user PCs, or `@()` to trace every source
+     machine.
    - `HistoryFile` / `HistoryRetentionDays` — durable lockout record the digest and
      repeat-count read from. Paths are relative to the script folder by default
      (`state\`, `logs\`); absolute paths also work.
@@ -139,6 +140,6 @@ get a clear `RPC server is unavailable`, not a misleading empty result.
   the old multi-email behavior was reaching for.
 - `Send-MailMessage` is deprecated by Microsoft but retained to avoid a module
   dependency on the DC. Replace with Graph/an SMTP client if/when desired.
-- Original ADI scripts replaced: `LockoutAlerts.ps1` (watch-list), `newlockouts.ps1`
+- Original legacy scripts replaced: `LockoutAlerts.ps1` (watch-list), `newlockouts.ps1`
   (tracing), `getlockouts.ps1` (dump), dead `newlockouts_v1.ps1`. The CSV watch-list
   is now folded into the `.psd1`.

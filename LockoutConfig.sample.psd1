@@ -49,7 +49,7 @@
         Recipients               = @('lockout_reports@example.com')
         CorrelationWindowSeconds = 1
         # Regex patterns for machine names to SKIP tracing (e.g. end-user PCs whose
-        # logs you can't or don't want to read). ADI's original filtered -L0/-D0/-T0.
+        # logs you can't or don't want to read). The legacy script filtered -L0/-D0/-T0.
         # Set to @() to trace every source machine.
         ExcludeMachinePatterns   = @('-L0', '-D0', '-T0')
     }
