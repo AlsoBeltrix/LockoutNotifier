@@ -22,9 +22,9 @@ function Resolve-ConfigPath {
 
 # Wrapper around Get-WinEvent that distinguishes "no matching events" (a normal,
 # empty result) from real failures (access-denied, RPC/unreachable, bad log name).
-# Get-WinEvent throws for BOTH; collapsing them is how the old code silently
-# reported access-denied as "no lockouts". This returns @() only when the log
-# genuinely had no matches, and re-throws everything else for the caller to surface.
+# Get-WinEvent throws for BOTH; collapsing them would silently report access-denied
+# as "no lockouts". This returns @() only when the log genuinely had no matches,
+# and re-throws everything else for the caller to surface.
 function Get-LockoutEvent {
     param(
         [Parameter(Mandatory)][string]$ComputerName,
@@ -139,7 +139,7 @@ function Get-LockoutCount {
     @(Get-LockoutHistory -Hours $Hours -Account $Account).Count
 }
 
-# Wrap a ConvertTo-Html table in the courier-new styling the original used.
+# Wrap a ConvertTo-Html table in courier-new styling for the email body.
 function ConvertTo-StyledTable {
     [CmdletBinding()]
     param([Parameter(ValueFromPipeline)]$InputObject)

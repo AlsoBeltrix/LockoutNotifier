@@ -65,9 +65,8 @@ requires — update those two if your path differs.
    - `SmtpServer`, `From`
    - `WatchList.Accounts`, and the `Recipients` for Tracing / Dump / Digest
    - `Tracing.ExcludeMachinePatterns` — **review this for the new domain.** The
-     sample's `-L0/-D0/-T0` is the legacy domain's workstation naming scheme. Set
-     patterns that match this domain's end-user PCs, or `@()` to trace every source
-     machine.
+     the `-L0/-D0/-T0` sample values are placeholders. Set patterns that match this
+     domain's end-user PC naming, or `@()` to trace every source machine.
    - `HistoryFile` / `HistoryRetentionDays` — durable lockout record the digest and
      repeat-count read from. Paths are relative to the script folder by default
      (`state\`, `logs\`); absolute paths also work.
@@ -124,22 +123,18 @@ get a clear `RPC server is unavailable`, not a misleading empty result.
 
 ## Design notes
 
-- **Repeat visibility (replaces the old email flood).** The original setup leaned
-  on repeated emails to tell who was locked out repeatedly/still. That was a side
-  effect of re-scanning the last N events on every trigger with no memory, so one
-  lockout got re-mailed whenever any other account locked out. This version:
-  - keeps **one email per genuine lockout** (each real lockout is a distinct 4740
-    RecordId; the `StateFile` only suppresses re-mailing the *same* event), and
-  - makes recurrence/persistence **explicit** — count + still-locked in each alert
-    and the periodic **digest** — instead of inferred from inbox volume.
+- **One email per genuine lockout, no repeats.** Each real lockout is a distinct
+  4740 with its own RecordId; `StateFile` records the highest one processed so the
+  *same* event is never re-emailed when the task fires again. Genuine repeat
+  lockouts are new RecordIds and still alert each time.
+- **Recurrence/persistence is explicit, not inferred from inbox volume.** Every
+  alert states how many times the account locked out recently and whether it's
+  still locked now; the digest gives the same view across all accounts.
 - **Durable history vs. the Security log.** Recurrence data comes from the
-  append-only `HistoryFile`, not retrospective log queries, because the target DC's
-  Security log rolls several times an hour and would silently undercount. The event
-  task records each 4740 as it fires (when the event is guaranteed present); the
-  digest and repeat-count summarize that file. This is the robust version of what
-  the old multi-email behavior was reaching for.
+  append-only `HistoryFile`, not retrospective log queries, because a busy DC's
+  Security log can roll several times an hour and a "last N hours" query would
+  silently undercount. The event task records each 4740 as it fires (when the
+  event is guaranteed present); the digest and repeat-count summarize that file.
+  Current lock state always comes from live AD, so it's accurate regardless.
 - `Send-MailMessage` is deprecated by Microsoft but retained to avoid a module
   dependency on the DC. Replace with Graph/an SMTP client if/when desired.
-- Original legacy scripts replaced: `LockoutAlerts.ps1` (watch-list), `newlockouts.ps1`
-  (tracing), `getlockouts.ps1` (dump), dead `newlockouts_v1.ps1`. The CSV watch-list
-  is now folded into the `.psd1`.
