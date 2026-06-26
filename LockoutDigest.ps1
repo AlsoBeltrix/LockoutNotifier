@@ -17,7 +17,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'LockoutConfig.psd1'),
+    # Defaults to LockoutConfig.psd1 next to this script (resolved in the body -
+    # $PSScriptRoot is unreliable in a param default under `powershell -File`).
+    [string]$ConfigPath,
     # Dry run: print the digest to the console instead of emailing it.
     [switch]$Preview
 )
@@ -26,12 +28,18 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PreviewMode = [bool]$Preview
 
+# Resolve the script's own folder robustly (see LockoutAlerts.ps1 for why).
+$scriptDir = $PSScriptRoot
+if (-not $scriptDir) { $scriptDir = Split-Path -Parent $PSCommandPath }
+if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+if (-not $ConfigPath) { $ConfigPath = Join-Path $scriptDir 'LockoutConfig.psd1' }
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
     throw "Config not found: $ConfigPath  (copy LockoutConfig.sample.psd1 to LockoutConfig.psd1 and edit it)"
 }
 $cfg = Import-PowerShellDataFile -LiteralPath $ConfigPath
-. (Join-Path $PSScriptRoot 'LockoutCommon.ps1')
-Resolve-ConfigPath -BaseDir $PSScriptRoot
+. (Join-Path $scriptDir 'LockoutCommon.ps1')
+Resolve-ConfigPath -BaseDir $scriptDir
 
 if (-not ($cfg.Digest -and $cfg.Digest.Enabled)) {
     Write-Log 'Digest disabled in config; nothing to do.'

@@ -33,7 +33,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'LockoutConfig.psd1'),
+    # Defaults to LockoutConfig.psd1 next to this script (resolved in the body -
+    # $PSScriptRoot is unreliable in a param default under `powershell -File`).
+    [string]$ConfigPath,
     # Dry run: print emails to the console instead of sending, and don't advance
     # the state file (so a preview doesn't "consume" new lockouts).
     [switch]$Preview
@@ -45,12 +47,20 @@ $PreviewMode = [bool]$Preview
 
 #region ---- Config & helpers -------------------------------------------------
 
+# Resolve the script's own folder robustly. $PSScriptRoot can be empty in a param
+# default when launched via `powershell.exe -File` (as the scheduled task does),
+# so compute it in the body with fallbacks.
+$scriptDir = $PSScriptRoot
+if (-not $scriptDir) { $scriptDir = Split-Path -Parent $PSCommandPath }
+if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+if (-not $ConfigPath) { $ConfigPath = Join-Path $scriptDir 'LockoutConfig.psd1' }
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
     throw "Config not found: $ConfigPath  (copy LockoutConfig.sample.psd1 to LockoutConfig.psd1 and edit it)"
 }
 $cfg = Import-PowerShellDataFile -LiteralPath $ConfigPath
-. (Join-Path $PSScriptRoot 'LockoutCommon.ps1')
-Resolve-ConfigPath -BaseDir $PSScriptRoot
+. (Join-Path $scriptDir 'LockoutCommon.ps1')
+Resolve-ConfigPath -BaseDir $scriptDir
 
 #endregion
 
