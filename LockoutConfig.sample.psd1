@@ -7,8 +7,10 @@
     # ---- Event fetch ---------------------------------------------------------
     # How many recent 4740 events to pull from the PDC each run. The state file
     # dedups within this set, so this only needs to comfortably exceed the number
-    # of lockouts that could occur between two firings of the event task.
-    MaxEvents  = 25
+    # of lockouts that could occur between two firings of the event task. Set well
+    # above your busiest case (e.g. a company-wide forced password change) so older
+    # events never fall off the back of the fetch before being processed.
+    MaxEvents  = 100
 
     # Window used to count "Nth lockout in last X hours" in watch-list alerts.
     RepeatWindowHours = 24
@@ -48,6 +50,10 @@
         Enabled                  = $true
         Recipients               = @('lockout_reports@example.com')
         CorrelationWindowSeconds = 1
+        # Max seconds to wait reading 4625s from a source machine before giving up
+        # on it. Keeps an unreachable host from blocking ~25s on RPC timeout and
+        # letting lockouts pile up during a storm. 5s is plenty for a reachable DC.
+        ReadTimeoutSeconds       = 5
         # Regex patterns for machine names to SKIP tracing (e.g. end-user PCs whose
         # logs you can't or don't want to read), matched as regexes against the
         # source machine name. Example: @('-L0','-D0','-T0') skips machines whose

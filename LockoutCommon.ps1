@@ -49,23 +49,61 @@ function Resolve-ConfigPath {
 # Get-WinEvent throws for BOTH; collapsing them would silently report access-denied
 # as "no lockouts". This returns @() only when the log genuinely had no matches,
 # and re-throws everything else for the caller to surface.
+# Classify a Get-WinEvent failure: $true if it just means "no matching events"
+# (a normal empty result), $false if it's a real failure to surface.
+function Test-NoMatchingEvents {
+    param($ErrorRecord)
+    ($ErrorRecord.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') -or
+    ($ErrorRecord.Exception.Message -match 'No events were found')
+}
+
+# Fast, interruptible reachability probe: can we open a TCP connection to $Port
+# on $ComputerName within $TimeoutSeconds? Used to pre-flight a remote event-log
+# read so an unreachable host fails in seconds instead of blocking ~25s inside an
+# uninterruptible RPC call (Get-WinEvent over RPC can't be cancelled, and killing
+# a job blocked in native code itself hangs - so we avoid making the call at all
+# against a host that isn't listening). Port 135 = RPC endpoint mapper, which
+# remote Security-log reads go through.
+function Test-HostReachable {
+    param([string]$ComputerName, [int]$Port = 135, [int]$TimeoutSeconds = 5)
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $iar = $client.BeginConnect($ComputerName, $Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
+            return $false   # connect didn't complete in time
+        }
+        $client.EndConnect($iar)   # throws if the connect actually failed
+        return $true
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
+}
+
 function Get-LockoutEvent {
     param(
         [Parameter(Mandatory)][string]$ComputerName,
         [Parameter(Mandatory)][hashtable]$FilterHashtable,
-        [int]$MaxEvents
+        [int]$MaxEvents,
+        # When >0, first probe RPC reachability (TCP 135) with this timeout and
+        # throw fast if the host isn't listening, rather than letting Get-WinEvent
+        # block ~25s on an unreachable host. Used for tracing's remote 4625 reads.
+        # The throw is treated as a real failure, so the caller skips that host.
+        [int]$TimeoutSeconds = 0
     )
+    if ($TimeoutSeconds -gt 0) {
+        if (-not (Test-HostReachable -ComputerName $ComputerName -TimeoutSeconds $TimeoutSeconds)) {
+            throw "Host $ComputerName not reachable on RPC (tcp/135) within ${TimeoutSeconds}s"
+        }
+    }
+
     $params = @{ ComputerName = $ComputerName; FilterHashtable = $FilterHashtable; ErrorAction = 'Stop' }
     if ($MaxEvents) { $params.MaxEvents = $MaxEvents }
     try {
         Get-WinEvent @params
-    } catch [System.Diagnostics.Eventing.Reader.EventLogException] {
-        # Most "no events" cases surface here; also catch the PS-specific id below.
-        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { return @() }
-        throw
     } catch {
-        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*' -or
-            $_.Exception.Message -match 'No events were found') { return @() }
+        if (Test-NoMatchingEvents $_) { return @() }
         throw   # access-denied, RPC unavailable, etc. - let the caller report it
     }
 }

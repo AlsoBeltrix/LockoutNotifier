@@ -177,6 +177,9 @@ $tracing = Get-ConfigValue -Config $cfg -Key 'Tracing'
 if ($tracing -and (Get-ConfigValue -Config $tracing -Key 'Enabled' -Default $false)) {
     $excludes = @(Get-ConfigValue -Config $tracing -Key 'ExcludeMachinePatterns' -Default @())
     $window   = [int](Get-ConfigValue -Config $tracing -Key 'CorrelationWindowSeconds' -Default 1)
+    # Cap each remote 4625 read so an unreachable source fails fast instead of
+    # blocking ~25s on RPC timeout (which lets lockouts pile up during a storm).
+    $traceTimeout = [int](Get-ConfigValue -Config $tracing -Key 'ReadTimeoutSeconds' -Default 5)
 
     foreach ($evt in $new) {
         $source = $evt.Computer
@@ -202,7 +205,7 @@ if ($tracing -and (Get-ConfigValue -Config $tracing -Key 'Enabled' -Default $fal
         try {
             $bad = Get-LockoutEvent -ComputerName $source -FilterHashtable @{
                 LogName = 'Security'; Id = 4625; StartTime = $start; EndTime = $end
-            } | Sort-Object TimeCreated -Descending
+            } -TimeoutSeconds $traceTimeout | Sort-Object TimeCreated -Descending
         } catch {
             # Don't abort the whole run for one unreachable/denied source machine,
             # but log it as a real failure (distinct from "no matching 4625").
